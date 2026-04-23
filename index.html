@@ -32,6 +32,16 @@
     </section>
 
     <section class="card">
+      <h3>截图识别 (OCR)</h3>
+      <p class="hint">仅识别坐骑属性块：`Level/Limit (MAX)` 下方 8 行属性。支持 `Jump Height` 与 `Altitude`。可直接粘贴截图到下方文本框。</p>
+      <div class="ocr-row">
+        <input id="ocrImageInput" type="file" accept="image/*" />
+        <button id="ocrRecognizeBtn" type="button">识别截图</button>
+        <button id="ocrApplyBtn" type="button">应用识别结果</button>
+      </div>
+      <p id="ocrStatus" class="hint"></p>
+      <textarea id="ocrText" class="ocr-text" placeholder="OCR 结果会显示在这里，也可以手动粘贴文本后点击应用。"></textarea>
+
       <div class="mode-row">
         <label for="materialMode">材料选择模式</label>
         <select id="materialMode">
@@ -74,6 +84,7 @@
     </section>
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -101,6 +101,26 @@ h1, h2, h3 {
   gap: 8px;
 }
 
+.ocr-row {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.ocr-text {
+  width: 100%;
+  min-height: 120px;
+  margin-top: 10px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 10px;
+  color: var(--ink);
+}
+
 label {
   font-size: 14px;
   color: var(--muted);

@@ -188,12 +188,125 @@ const STORAGE_KEY = "wynn_mount_presets_v3";
 const ACTIVE_PRESET_KEY = "wynn_mount_active_preset";
 const MAX_PER_MATERIAL = 5;
 
+const OCR_ATTRIBUTE_ALIASES = {
+  Speed: ["speed"],
+  Acceleration: ["acceleration", "acc"],
+  Altitude: ["altitude", "jumpheight", "jump"],
+  Energy: ["energy"],
+  Handling: ["handling"],
+  Toughness: ["toughness"],
+  Boost: ["boost"],
+  Training: ["training"]
+};
+
 function parseNonNegativeInt(value, fallback = 0) {
   const n = Number.parseInt(value, 10);
   if (!Number.isFinite(n) || n < 0) {
     return fallback;
   }
   return n;
+}
+
+function normalizeOcrLine(line) {
+  return line
+    .replace(/\r/g, "")
+    .toLowerCase()
+    .replace(/\|/g, " ")
+    .replace(/[\[\]{}]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeAttrToken(line) {
+  return normalizeOcrLine(line).replace(/[^a-z]/g, "");
+}
+
+function detectAttrFromLine(line) {
+  const token = normalizeAttrToken(line);
+  if (!token) {
+    return null;
+  }
+
+  for (let i = 0; i < ATTR_NAMES.length; i++) {
+    const attrName = ATTR_NAMES[i];
+    const aliases = OCR_ATTRIBUTE_ALIASES[attrName] || [];
+    for (let j = 0; j < aliases.length; j++) {
+      if (token.includes(aliases[j])) {
+        return attrName;
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractStatTripleFromLine(line) {
+  const normalized = line
+    .replace(/[Il]/g, "1")
+    .replace(/[Oo]/g, "0")
+    .replace(/S/g, "5");
+
+  const slashMatch = normalized.match(/(\d{1,3})\s*\/\s*(\d{1,3})[^\d]{0,12}(\d{1,3})/);
+  if (slashMatch) {
+    return {
+      level: parseNonNegativeInt(slashMatch[1], 1),
+      limit: parseNonNegativeInt(slashMatch[2], 10),
+      max: parseNonNegativeInt(slashMatch[3], 30)
+    };
+  }
+
+  return null;
+}
+
+function parseMountOcrText(rawText) {
+  if (!rawText || !rawText.trim()) {
+    return { ok: false, message: "OCR 文本为空" };
+  }
+
+  const lines = rawText
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  // 标题行容错：只要包含level和limit即可，无需MAX
+  const headerIndex = lines.findIndex((line) => /level/i.test(line) && /limit/i.test(line));
+  if (headerIndex < 0) {
+    return { ok: false, message: "未找到 Level/Limit 标题行（可为 Level Limit、Level/Limit、Level | Limit 等）" };
+  }
+
+  const parsedByAttr = {};
+  let pendingAttr = null;
+
+  for (let i = headerIndex + 1; i < lines.length; i++) {
+    const line = lines[i];
+    const detectedAttr = detectAttrFromLine(line);
+    const triple = extractStatTripleFromLine(line);
+
+    if (detectedAttr && triple) {
+      parsedByAttr[detectedAttr] = triple;
+      pendingAttr = null;
+    } else if (detectedAttr) {
+      pendingAttr = detectedAttr;
+    } else if (triple && pendingAttr) {
+      parsedByAttr[pendingAttr] = triple;
+      pendingAttr = null;
+    }
+
+    if (Object.keys(parsedByAttr).length === ATTR_NAMES.length) {
+      break;
+    }
+  }
+
+  const missing = ATTR_NAMES.filter((name) => !parsedByAttr[name]);
+  if (missing.length === ATTR_NAMES.length) {
+    return { ok: false, message: "未识别到任何属性行" };
+  }
+
+  return {
+    ok: true,
+    parsedByAttr,
+    missing
+  };
 }
 
 function deepCopyPreset(preset) {
@@ -470,6 +583,51 @@ function initNeedPage() {
   const timeEstimateEl = document.getElementById("timeEstimate");
   const modeHint = document.getElementById("modeHint");
 
+  const ocrImageInput = document.getElementById("ocrImageInput");
+  const ocrRecognizeBtn = document.getElementById("ocrRecognizeBtn");
+  const ocrApplyBtn = document.getElementById("ocrApplyBtn");
+  const ocrStatus = document.getElementById("ocrStatus");
+  const ocrText = document.getElementById("ocrText");
+
+  // 支持粘贴图片到OCR文本框
+  ocrText.addEventListener("paste", async (e) => {
+    if (!e.clipboardData) return;
+    const items = e.clipboardData.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          ocrImageInput.value = ""; // 清空文件输入
+          setOcrStatus("粘贴图片，正在识别...");
+          ocrRecognizeBtn.disabled = true;
+          try {
+            const canvas = await buildOcrCanvas(file);
+            const result = await window.Tesseract.recognize(canvas, "eng", {
+              logger: (m) => {
+                if (m.status === "recognizing text" && typeof m.progress === "number") {
+                  setOcrStatus(`OCR 识别中... ${Math.round(m.progress * 100)}%`);
+                }
+              }
+            });
+              ocrText.value = result?.data?.text || "";
+              setOcrStatus("OCR 识别完成，请点击“应用识别结果”。");
+              ocrText.scrollIntoView({behavior: "smooth", block: "center"});
+              ocrText.focus();
+          } catch (err) {
+            setOcrStatus(`OCR 识别失败: ${err && err.message ? err.message : "未知错误"}`);
+            alert(`OCR 识别失败: ${err && err.message ? err.message : "未知错误"}`);
+          } finally {
+            ocrRecognizeBtn.disabled = false;
+          }
+        }
+        break;
+      }
+    }
+  });
+
   const presetSelect = document.getElementById("presetSelect");
   const applyPresetBtn = document.getElementById("applyPresetBtn");
   const savePresetBtn = document.getElementById("savePresetBtn");
@@ -505,6 +663,113 @@ function initNeedPage() {
       limit: parseNonNegativeInt(item.limit.value, 10),
       max: parseNonNegativeInt(item.max.value, 30)
     }));
+  }
+
+  function setOcrStatus(message) {
+    ocrStatus.textContent = message;
+  }
+
+  function applyOcrTextToInputs() {
+    const parsed = parseMountOcrText(ocrText.value || "");
+    if (!parsed.ok) {
+      setOcrStatus(`OCR 解析失败: ${parsed.message}`);
+      alert(`OCR 解析失败: ${parsed.message}`);
+      return;
+    }
+
+    ATTR_NAMES.forEach((attrName, idx) => {
+      const row = parsed.parsedByAttr[attrName];
+      if (!row) {
+        return;
+      }
+      rowInputs[idx].level.value = String(row.level);
+      rowInputs[idx].limit.value = String(row.limit);
+      rowInputs[idx].max.value = String(row.max);
+    });
+
+    syncModeHint(false);
+
+    if (parsed.missing.length) {
+      setOcrStatus(`已应用 ${ATTR_NAMES.length - parsed.missing.length}/8 项。缺失: ${parsed.missing.join(", ")}`);
+      alert(`OCR 已部分应用，缺失属性: ${parsed.missing.join(", ")}\n请手动补全后再计算。`);
+      return;
+    }
+
+    setOcrStatus("OCR 已识别并应用 8/8 项属性。");
+  }
+
+  function loadImageFromFile(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("图片加载失败"));
+      };
+      img.src = url;
+    });
+  }
+
+  async function buildOcrCanvas(file) {
+    const img = await loadImageFromFile(file);
+    const scale = 2;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.floor(img.width * scale));
+    canvas.height = Math.max(1, Math.floor(img.height * scale));
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+      const contrast = Math.max(0, Math.min(255, (gray - 128) * 1.35 + 128));
+      data[i] = contrast;
+      data[i + 1] = contrast;
+      data[i + 2] = contrast;
+    }
+    ctx.putImageData(imageData, 0, 0);
+
+    return canvas;
+  }
+
+  async function recognizeOcrFromImage() {
+    const file = ocrImageInput.files && ocrImageInput.files[0];
+    if (!file) {
+      alert("请先选择截图文件");
+      return;
+    }
+
+    if (!window.Tesseract || !window.Tesseract.recognize) {
+      alert("OCR 引擎未加载，请检查网络后重试。");
+      return;
+    }
+
+    ocrRecognizeBtn.disabled = true;
+    setOcrStatus("OCR 识别中...");
+
+    try {
+      const canvas = await buildOcrCanvas(file);
+      const result = await window.Tesseract.recognize(canvas, "eng", {
+        logger: (m) => {
+          if (m.status === "recognizing text" && typeof m.progress === "number") {
+            setOcrStatus(`OCR 识别中... ${Math.round(m.progress * 100)}%`);
+          }
+        }
+      });
+
+      ocrText.value = result?.data?.text || "";
+      setOcrStatus("OCR 识别完成，请点击“应用识别结果”。");
+    } catch (err) {
+      setOcrStatus(`OCR 识别失败: ${err && err.message ? err.message : "未知错误"}`);
+      alert(`OCR 识别失败: ${err && err.message ? err.message : "未知错误"}`);
+    } finally {
+      ocrRecognizeBtn.disabled = false;
+    }
   }
 
   function renderManualLevelOptions(rows, preferHighestUsable) {
@@ -590,6 +855,14 @@ function initNeedPage() {
       return;
     }
     setRowsFromPreset(current);
+  });
+
+  ocrRecognizeBtn.addEventListener("click", () => {
+    recognizeOcrFromImage();
+  });
+
+  ocrApplyBtn.addEventListener("click", () => {
+    applyOcrTextToInputs();
   });
 
   savePresetBtn.addEventListener("click", () => {
