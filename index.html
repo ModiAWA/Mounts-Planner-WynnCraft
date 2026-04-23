@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mount Planner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="bg-orb orb-a"></div>
+  <div class="bg-orb orb-b"></div>
+
+  <main class="page-wrap">
+    <header class="topbar">
+      <h1>Mount Planner</h1>
+    </header>
+
+    <section class="card hero">
+      <h2>8 属性规划</h2>
+      <p>每个属性填写 Level / Limit / Max。</p>
+      <p>计算所有属性 Limit 提升至 MAX 最少材料。</p>
+      <div class="preset-row">
+        <label for="presetSelect">预设</label>
+        <select id="presetSelect"></select>
+        <button id="applyPresetBtn" type="button">应用预设</button>
+        <button id="savePresetBtn" type="button">保存为新预设</button>
+        <button id="deletePresetBtn" type="button" class="danger">删除预设</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="mode-row">
+        <label for="materialMode">材料选择模式</label>
+        <select id="materialMode">
+          <option value="auto">自动优先最高可用等级</option>
+          <option value="manual">手动指定等级</option>
+        </select>
+
+        <label for="manualMaterialLevel">手动等级</label>
+        <select id="manualMaterialLevel"></select>
+      </div>
+      <p id="modeHint" class="hint"></p>
+
+      <form id="needForm" class="need-grid">
+        <div class="triple-head">属性</div>
+        <div class="triple-head">Level</div>
+        <div class="triple-head">Limit</div>
+        <div class="triple-head">Max</div>
+      </form>
+
+      <div class="actions">
+        <button id="solveBtn" type="button" class="primary">计算最少素材</button>
+      </div>
+    </section>
+
+    <section class="card result" id="resultCard" hidden>
+      <h3>计算结果</h3>
+      <p id="bestCount"></p>
+      <p id="selectedMaterialLevel"></p>
+      <p id="timeEstimate"></p>
+      <table>
+        <thead>
+          <tr>
+            <th>素材</th>
+            <th>数量</th>
+          </tr>
+        </thead>
+        <tbody id="usageBody"></tbody>
+      </table>
+      <p id="attrSummary"></p>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
