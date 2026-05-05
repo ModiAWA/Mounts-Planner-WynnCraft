@@ -586,6 +586,13 @@ function initNeedPage() {
   const ocrImageInput = document.getElementById("ocrImageInput");
   const ocrRecognizeBtn = document.getElementById("ocrRecognizeBtn");
   const ocrApplyBtn = document.getElementById("ocrApplyBtn");
+  const ocrPreviewBtn = document.getElementById("ocrPreviewBtn");
+  const ocrPreviewCanvas = document.getElementById("ocrPreviewCanvas");
+  const ocrScale = document.getElementById("ocrScale");
+  const ocrThreshold = document.getElementById("ocrThreshold");
+  const ocrThresholdValue = document.getElementById("ocrThresholdValue");
+  const ocrInvert = document.getElementById("ocrInvert");
+  const ocrBinarization = document.getElementById("ocrBinarization");
   const ocrStatus = document.getElementById("ocrStatus");
   const ocrText = document.getElementById("ocrText");
 
@@ -604,7 +611,8 @@ function initNeedPage() {
           setOcrStatus("粘贴图片，正在识别...");
           ocrRecognizeBtn.disabled = true;
           try {
-            const canvas = await buildOcrCanvas(file);
+            const canvas = await buildOcrCanvas(file, getOcrPreprocessOptions());
+            drawOcrPreview(canvas);
             const result = await window.Tesseract.recognize(canvas, "eng", {
               logger: (m) => {
                 if (m.status === "recognizing text" && typeof m.progress === "number") {
@@ -612,10 +620,10 @@ function initNeedPage() {
                 }
               }
             });
-              ocrText.value = result?.data?.text || "";
-              setOcrStatus("OCR 识别完成，请点击“应用识别结果”。");
-              ocrText.scrollIntoView({behavior: "smooth", block: "center"});
-              ocrText.focus();
+            ocrText.value = result?.data?.text || "";
+            setOcrStatus("OCR 识别完成，请点击“应用识别结果”。");
+            ocrText.scrollIntoView({behavior: "smooth", block: "center"});
+            ocrText.focus();
           } catch (err) {
             setOcrStatus(`OCR 识别失败: ${err && err.message ? err.message : "未知错误"}`);
             alert(`OCR 识别失败: ${err && err.message ? err.message : "未知错误"}`);
@@ -714,27 +722,85 @@ function initNeedPage() {
     });
   }
 
-  async function buildOcrCanvas(file) {
+  async function buildOcrCanvas(file, options = {}) {
+    const {
+      scale = 1.5,
+      threshold = 68,
+      invert = true,
+      useBinarization = true
+    } = options;
+
     const img = await loadImageFromFile(file);
-    const scale = 2;
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.floor(img.width * scale));
     canvas.height = Math.max(1, Math.floor(img.height * scale));
     const ctx = canvas.getContext("2d");
+
+    ctx.imageSmoothingEnabled = false;
+
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imageData.data;
+
     for (let i = 0; i < data.length; i += 4) {
       const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-      const contrast = Math.max(0, Math.min(255, (gray - 128) * 1.35 + 128));
-      data[i] = contrast;
-      data[i + 1] = contrast;
-      data[i + 2] = contrast;
-    }
-    ctx.putImageData(imageData, 0, 0);
+      let finalColor;
 
+      if (useBinarization) {
+        finalColor = gray >= threshold ? 255 : 0;
+      } else {
+        finalColor = (gray - 128) * 1.35 + 128;
+      }
+
+      if (invert) {
+        finalColor = 255 - finalColor;
+      }
+
+      data[i] = finalColor;
+      data[i + 1] = finalColor;
+      data[i + 2] = finalColor;
+    }
+
+    ctx.putImageData(imageData, 0, 0);
     return canvas;
+  }
+
+  function getOcrPreprocessOptions() {
+    return {
+      scale: parseFloat(ocrScale.value) || 1.5,
+      threshold: parseInt(ocrThreshold.value, 10) || 68,
+      invert: ocrInvert.checked,
+      useBinarization: ocrBinarization.checked
+    };
+  }
+
+  function drawOcrPreview(canvas) {
+    if (!ocrPreviewCanvas) {
+      return;
+    }
+    ocrPreviewCanvas.width = canvas.width;
+    ocrPreviewCanvas.height = canvas.height;
+    const previewCtx = ocrPreviewCanvas.getContext("2d");
+    previewCtx.clearRect(0, 0, ocrPreviewCanvas.width, ocrPreviewCanvas.height);
+    previewCtx.drawImage(canvas, 0, 0);
+  }
+
+  async function previewOcrCanvas() {
+    const file = ocrImageInput.files && ocrImageInput.files[0];
+    if (!file) {
+      setOcrStatus("请选择截图文件以预览处理效果");
+      return;
+    }
+
+    try {
+      const canvas = await buildOcrCanvas(file, getOcrPreprocessOptions());
+      drawOcrPreview(canvas);
+      setOcrStatus("预处理预览已更新");
+    } catch (err) {
+      setOcrStatus(`预处理预览失败: ${err && err.message ? err.message : "未知错误"}`);
+      alert(`预处理预览失败: ${err && err.message ? err.message : "未知错误"}`);
+    }
   }
 
   async function recognizeOcrFromImage() {
@@ -753,7 +819,7 @@ function initNeedPage() {
     setOcrStatus("OCR 识别中...");
 
     try {
-      const canvas = await buildOcrCanvas(file);
+      const canvas = await buildOcrCanvas(file, getOcrPreprocessOptions());
       const result = await window.Tesseract.recognize(canvas, "eng", {
         logger: (m) => {
           if (m.status === "recognizing text" && typeof m.progress === "number") {
@@ -859,6 +925,20 @@ function initNeedPage() {
 
   ocrRecognizeBtn.addEventListener("click", () => {
     recognizeOcrFromImage();
+  });
+
+  ocrImageInput.addEventListener("change", () => {
+    if (ocrImageInput.files && ocrImageInput.files[0]) {
+      previewOcrCanvas();
+    }
+  });
+
+  ocrPreviewBtn.addEventListener("click", () => {
+    previewOcrCanvas();
+  });
+
+  ocrThreshold.addEventListener("input", () => {
+    ocrThresholdValue.textContent = ocrThreshold.value;
   });
 
   ocrApplyBtn.addEventListener("click", () => {

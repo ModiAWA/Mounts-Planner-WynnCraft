@@ -121,6 +121,48 @@ h1, h2, h3 {
   color: var(--ink);
 }
 
+.ocr-debug {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.ocr-debug h4 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
+.debug-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.ocr-debug label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.ocr-debug input[type="number"],
+.ocr-debug input[type="range"] {
+  margin-left: 4px;
+}
+
+.ocr-preview {
+  width: 100%;
+  max-width: 100%;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
 label {
   font-size: 14px;
   color: var(--muted);
