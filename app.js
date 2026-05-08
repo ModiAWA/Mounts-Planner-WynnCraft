@@ -184,20 +184,7 @@ const MATERIAL_LEVELS = Object.keys(MATERIAL_LEVEL_DATA)
   .map((v) => Number.parseInt(v, 10))
   .sort((a, b) => a - b);
 
-const STORAGE_KEY = "wynn_mount_presets_v3";
-const ACTIVE_PRESET_KEY = "wynn_mount_active_preset";
-const MAX_PER_MATERIAL = 5;
-
-const OCR_ATTRIBUTE_ALIASES = {
-  Speed: ["speed"],
-  Acceleration: ["acceleration", "acc"],
-  Altitude: ["altitude", "jumpheight", "jump"],
-  Energy: ["energy"],
-  Handling: ["handling"],
-  Toughness: ["toughness"],
-  Boost: ["boost"],
-  Training: ["training"]
-};
+const MAX_PER_MATERIAL = 20;
 
 function parseNonNegativeInt(value, fallback = 0) {
   const n = Number.parseInt(value, 10);
@@ -207,55 +194,97 @@ function parseNonNegativeInt(value, fallback = 0) {
   return n;
 }
 
-function normalizeOcrLine(line) {
-  return line
-    .replace(/\r/g, "")
-    .toLowerCase()
-    .replace(/\|/g, " ")
-    .replace(/[\[\]{}]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normalizeAttrToken(line) {
-  return normalizeOcrLine(line).replace(/[^a-z]/g, "");
-}
-
-function detectAttrFromLine(line) {
-  const token = normalizeAttrToken(line);
-  if (!token) {
-    return null;
+function extractBracketMax(line) {
+  const bracketMatch = line.match(/[\[\(]\s*(\d{1,4})\s*[\]\)]/);
+  if (bracketMatch) {
+    return parseNonNegativeInt(bracketMatch[1], 0);
   }
-
-  for (let i = 0; i < ATTR_NAMES.length; i++) {
-    const attrName = ATTR_NAMES[i];
-    const aliases = OCR_ATTRIBUTE_ALIASES[attrName] || [];
-    for (let j = 0; j < aliases.length; j++) {
-      if (token.includes(aliases[j])) {
-        return attrName;
-      }
-    }
-  }
-
   return null;
 }
 
 function extractStatTripleFromLine(line) {
-  const normalized = line
-    .replace(/[Il]/g, "1")
-    .replace(/[Oo]/g, "0")
-    .replace(/S/g, "5");
+  const max = extractBracketMax(line);
+  if (max === null) return null;
 
-  const slashMatch = normalized.match(/(\d{1,3})\s*\/\s*(\d{1,3})[^\d]{0,12}(\d{1,3})/);
-  if (slashMatch) {
-    return {
-      level: parseNonNegativeInt(slashMatch[1], 1),
-      limit: parseNonNegativeInt(slashMatch[2], 10),
-      max: parseNonNegativeInt(slashMatch[3], 30)
-    };
+  const cleaned = line
+    .replace(/\[.*?\]/g, '')
+    .replace(/\(.*?\)/g, '')
+    .replace(/[iIlL!?@%&©]/g, '')
+    .replace(/\|/g, ' ')
+    .replace(/,/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const digitStart = cleaned.search(/\d/);
+  if (digitStart === -1) return { level: null, limit: null, max };
+
+  let numStr = cleaned.substring(digitStart)
+    .replace(/\*/g, ' ')
+    .replace(/[^0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const tokens = numStr.match(/\d+/g);
+  if (!tokens || tokens.length < 1) return { level: null, limit: null, max };
+
+  const nums = tokens.map(Number);
+
+  // Case 1: 3+ numbers → find level<=limit<=max
+  if (nums.length >= 3) {
+    for (let i = 0; i <= nums.length - 3; i++) {
+      if (nums[i] <= nums[i + 1] && nums[i + 1] <= nums[i + 2]) {
+        return { level: nums[i], limit: nums[i + 1], max: nums[i + 2] };
+      }
+    }
+    if (nums[0] <= nums[1] && nums[1] <= max)
+      return { level: nums[0], limit: nums[1], max };
+    return { level: null, limit: null, max };
   }
 
-  return null;
+  // Case 2: 2 numbers → level/limit
+  if (nums.length === 2) {
+    if (nums[0] <= max && nums[1] <= max) {
+      return { level: nums[0], limit: nums[1], max };
+    }
+    return { level: null, limit: null, max };
+  }
+
+  // Case 3: 1 number → try splitting on 7 or 1
+  if (nums.length === 1) {
+    const s = tokens[0];
+    const candidates = [];
+
+    // double char 77/11 split
+    for (let i = 1; i < s.length - 2; i++) {
+      if ((s[i] === '7' || s[i] === '1') && (s[i + 1] === '7' || s[i + 1] === '1')) {
+        const l = s.substring(0, i), r = s.substring(i + 2);
+        if (l.length >= 2 && r.length >= 2) {
+          const ln = parseInt(l), rn = parseInt(r);
+          if (ln && rn && ln <= rn && rn <= max)
+            candidates.push({ level: ln, limit: rn, max, prio: 2 });
+        }
+      }
+    }
+
+    // single char 7/1 split
+    for (let i = 1; i < s.length - 1; i++) {
+      if (s[i] === '7' || s[i] === '1') {
+        const l = s.substring(0, i), r = s.substring(i + 1);
+        if (l && r) {
+          const ln = parseInt(l), rn = parseInt(r);
+          if (ln && rn && ln <= rn && rn <= max)
+            candidates.push({ level: ln, limit: rn, max, prio: 1 });
+        }
+      }
+    }
+
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => b.prio - a.prio || b.level - a.level);
+      return { level: candidates[0].level, limit: candidates[0].limit, max: candidates[0].max };
+    }
+  }
+
+  return { level: null, limit: null, max };
 }
 
 function parseMountOcrText(rawText) {
@@ -268,154 +297,53 @@ function parseMountOcrText(rawText) {
     .map((line) => line.trim())
     .filter(Boolean);
 
-  // 标题行容错：只要包含level和limit即可，无需MAX
-  const headerIndex = lines.findIndex((line) => /level/i.test(line) && /limit/i.test(line));
+  const headerIndex = lines.findIndex((line) =>
+    /level/i.test(line) && /limit/i.test(line)
+  );
   if (headerIndex < 0) {
-    return { ok: false, message: "未找到 Level/Limit 标题行（可为 Level Limit、Level/Limit、Level | Limit 等）" };
+    return { ok: false, message: "未找到 Level/Limit 标题行" };
   }
 
-  const parsedByAttr = {};
-  let pendingAttr = null;
-
-  for (let i = headerIndex + 1; i < lines.length; i++) {
+  const dataLines = [];
+  for (let i = headerIndex + 1; i < lines.length && dataLines.length < 8; i++) {
     const line = lines[i];
-    const detectedAttr = detectAttrFromLine(line);
-    const triple = extractStatTripleFromLine(line);
-
-    if (detectedAttr && triple) {
-      parsedByAttr[detectedAttr] = triple;
-      pendingAttr = null;
-    } else if (detectedAttr) {
-      pendingAttr = detectedAttr;
-    } else if (triple && pendingAttr) {
-      parsedByAttr[pendingAttr] = triple;
-      pendingAttr = null;
-    }
-
-    if (Object.keys(parsedByAttr).length === ATTR_NAMES.length) {
-      break;
-    }
+    if (/feeding|click|rename|combat|quest|table|level|limit|max/i.test(line)) continue;
+    dataLines.push(line);
   }
 
-  const missing = ATTR_NAMES.filter((name) => !parsedByAttr[name]);
-  if (missing.length === ATTR_NAMES.length) {
-    return { ok: false, message: "未识别到任何属性行" };
+  if (dataLines.length < 8) {
+    return { ok: false, message: `标题行下只找到 ${dataLines.length} 行数据，需要8行` };
   }
+
+  const result = [];
+  for (let i = 0; i < 8; i++) {
+    const triple = extractStatTripleFromLine(dataLines[i]);
+    result.push({
+      attr: ATTR_NAMES[i],
+      level: triple ? triple.level : null,
+      limit: triple ? triple.limit : null,
+      max: triple ? triple.max : null
+    });
+  }
+
+  const missingLevel = result.filter(r => r.level === null).map(r => r.attr);
+  const missingLimit = result.filter(r => r.limit === null).map(r => r.attr);
 
   return {
     ok: true,
-    parsedByAttr,
-    missing
+    rows: result,
+    missingLevel,
+    missingLimit
   };
 }
 
-function deepCopyPreset(preset) {
-  return {
-    name: preset.name,
-    level: preset.level.slice(),
-    limit: preset.limit.slice(),
-    max: preset.max.slice(),
-    mode: preset.mode,
-    manualLevel: preset.manualLevel
-  };
-}
-
-function defaultPreset() {
-  return {
-    name: "default",
-    level: Array(8).fill(1),
-    limit: Array(8).fill(10),
-    max: Array(8).fill(30),
-    mode: "auto",
-    manualLevel: 10
-  };
-}
-
-function normalizePreset(input) {
-  const base = defaultPreset();
-  const preset = {
-    name: String(input?.name || base.name),
-    level: Array.isArray(input?.level) ? input.level.slice(0, 8) : base.level.slice(),
-    limit: Array.isArray(input?.limit) ? input.limit.slice(0, 8) : base.limit.slice(),
-    max: Array.isArray(input?.max) ? input.max.slice(0, 8) : base.max.slice(),
-    mode: input?.mode === "manual" ? "manual" : "auto",
-    manualLevel: parseNonNegativeInt(input?.manualLevel, base.manualLevel)
-  };
-
-  while (preset.level.length < 8) preset.level.push(1);
-  while (preset.limit.length < 8) preset.limit.push(10);
-  while (preset.max.length < 8) preset.max.push(30);
-
-  for (let i = 0; i < 8; i++) {
-    preset.level[i] = parseNonNegativeInt(preset.level[i], 1);
-    preset.limit[i] = parseNonNegativeInt(preset.limit[i], 10);
-    preset.max[i] = parseNonNegativeInt(preset.max[i], 30);
-    if (preset.level[i] > preset.limit[i]) {
-      preset.limit[i] = preset.level[i];
-    }
-    if (preset.limit[i] > preset.max[i]) {
-      preset.max[i] = preset.limit[i];
-    }
-  }
-
-  if (!MATERIAL_LEVEL_DATA[preset.manualLevel]) {
-    preset.manualLevel = 10;
-  }
-
-  return preset;
-}
-
-function readPresets() {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    const presets = [defaultPreset()];
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
-    localStorage.setItem(ACTIVE_PRESET_KEY, presets[0].name);
-    return presets;
-  }
-
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      throw new Error("invalid presets");
-    }
-    return parsed.map(normalizePreset);
-  } catch (_) {
-    const presets = [defaultPreset()];
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(presets));
-    localStorage.setItem(ACTIVE_PRESET_KEY, presets[0].name);
-    return presets;
-  }
-}
-
-function savePresets(presets) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(presets.map(normalizePreset)));
-}
-
-function getActivePresetName() {
-  return localStorage.getItem(ACTIVE_PRESET_KEY) || "default";
-}
-
-function setActivePresetName(name) {
-  localStorage.setItem(ACTIVE_PRESET_KEY, name);
-}
-
-function findPresetByName(presets, name) {
-  return presets.find((p) => p.name === name);
-}
-
-function fillPresetSelect(selectEl, presets, activeName) {
-  selectEl.innerHTML = "";
-  presets.forEach((preset) => {
-    const option = document.createElement("option");
-    option.value = preset.name;
-    option.textContent = preset.name;
-    if (preset.name === activeName) {
-      option.selected = true;
-    }
-    selectEl.appendChild(option);
-  });
-}
+/** 每个等级对应的材料短名称（去掉资源类型后缀） */
+const MATERIAL_SHORT_NAMES = Object.fromEntries(
+  Object.entries(MATERIAL_REAL_NAMES_BY_LEVEL).map(([lv, names]) => [
+    lv,
+    names.map(name => name.replace(/ (Ingot|Gem|Plank|Paper|String|Grains|Oil|Meat)$/, ""))
+  ])
+);
 
 function getMaterialNamesForLevel(level) {
   const names = MATERIAL_REAL_NAMES_BY_LEVEL[level];
@@ -465,7 +393,6 @@ function estimateFeedingTime(limits, selectedLevel, bestChoice) {
     }
   }
 
-  // Feeding time is based on Average Limit, so use current limits as the start.
   const startTotal = limits.reduce((sum, v) => sum + v, 0);
 
   function simulate(order) {
@@ -573,66 +500,54 @@ function validateRows(rows) {
   return { ok: true };
 }
 
+/**
+ * 创建 Tesseract Worker — 固定使用 mc 模型（Legacy 引擎）
+ */
+async function createTesseractWorker(loggerCallback) {
+  const lang = "mc";
+  const langPath = "./";
+  const corePath = "https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1/tesseract-core-simd.wasm.js";
+  const workerPath = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js";
+
+  console.log("[OCR] 创建 Legacy Worker (OEM=2):", { lang, langPath });
+
+  const worker = await window.Tesseract.createWorker(lang, 2, {
+    corePath,
+    workerPath,
+    langPath,
+    logger: loggerCallback
+  });
+  return worker;
+}
+
 function initNeedPage() {
   const form = document.getElementById("needForm");
   const resultCard = document.getElementById("resultCard");
   const bestCountEl = document.getElementById("bestCount");
   const usageBody = document.getElementById("usageBody");
-  const attrSummary = document.getElementById("attrSummary");
+  const overflowGrid = document.getElementById("overflowGrid");
   const selectedLevelEl = document.getElementById("selectedMaterialLevel");
   const timeEstimateEl = document.getElementById("timeEstimate");
   const modeHint = document.getElementById("modeHint");
 
   const ocrImageInput = document.getElementById("ocrImageInput");
   const ocrRecognizeBtn = document.getElementById("ocrRecognizeBtn");
-  const ocrApplyBtn = document.getElementById("ocrApplyBtn");
   const ocrStatus = document.getElementById("ocrStatus");
-  const ocrText = document.getElementById("ocrText");
+  const ocrCard = document.getElementById("ocrCard");
+  const showOriginalBtn = document.getElementById("showOriginalBtn");
+  const showPreprocessedBtn = document.getElementById("showPreprocessedBtn");
+  const preprocCanvas = document.getElementById("preprocCanvas");
+  const preprocCanvasWrap = document.getElementById("preprocCanvasWrap");
+  const originalCanvas = document.getElementById("originalCanvas");
+  const originalCanvasWrap = document.getElementById("originalCanvasWrap");
+  const preprocHint = document.getElementById("preprocHint");
 
-  // 支持粘贴图片到OCR文本框
-  ocrText.addEventListener("paste", async (e) => {
-    if (!e.clipboardData) return;
-    const items = e.clipboardData.items;
-    if (!items) return;
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      if (item.kind === "file" && item.type.startsWith("image/")) {
-        e.preventDefault();
-        const file = item.getAsFile();
-        if (file) {
-          ocrImageInput.value = ""; // 清空文件输入
-          setOcrStatus("粘贴图片，正在识别...");
-          ocrRecognizeBtn.disabled = true;
-          try {
-            const canvas = await buildOcrCanvas(file);
-            const result = await window.Tesseract.recognize(canvas, "eng", {
-              logger: (m) => {
-                if (m.status === "recognizing text" && typeof m.progress === "number") {
-                  setOcrStatus(`OCR 识别中... ${Math.round(m.progress * 100)}%`);
-                }
-              }
-            });
-              ocrText.value = result?.data?.text || "";
-              setOcrStatus("OCR 识别完成，请点击“应用识别结果”。");
-              ocrText.scrollIntoView({behavior: "smooth", block: "center"});
-              ocrText.focus();
-          } catch (err) {
-            setOcrStatus(`OCR 识别失败: ${err && err.message ? err.message : "未知错误"}`);
-            alert(`OCR 识别失败: ${err && err.message ? err.message : "未知错误"}`);
-          } finally {
-            ocrRecognizeBtn.disabled = false;
-          }
-        }
-        break;
-      }
-    }
-  });
+  /** 粘贴方式传入的图片文件，用于显示原图/预处理按钮 */
+  let pastedOcrFile = null;
 
-  const presetSelect = document.getElementById("presetSelect");
-  const applyPresetBtn = document.getElementById("applyPresetBtn");
-  const savePresetBtn = document.getElementById("savePresetBtn");
-  const deletePresetBtn = document.getElementById("deletePresetBtn");
   const solveBtn = document.getElementById("solveBtn");
+  const resetBtn = document.getElementById("resetBtn");
+  const copyLinkBtn = document.getElementById("copyLinkBtn");
 
   const modeSelect = document.getElementById("materialMode");
   const manualLevelSelect = document.getElementById("manualMaterialLevel");
@@ -669,33 +584,13 @@ function initNeedPage() {
     ocrStatus.textContent = message;
   }
 
-  function applyOcrTextToInputs() {
-    const parsed = parseMountOcrText(ocrText.value || "");
-    if (!parsed.ok) {
-      setOcrStatus(`OCR 解析失败: ${parsed.message}`);
-      alert(`OCR 解析失败: ${parsed.message}`);
-      return;
-    }
-
-    ATTR_NAMES.forEach((attrName, idx) => {
-      const row = parsed.parsedByAttr[attrName];
-      if (!row) {
-        return;
+  // OCR logger
+  function makeOcrLogger(setStatusFn) {
+    return (m) => {
+      if (m.status === "recognizing text" && typeof m.progress === "number") {
+        setStatusFn(`OCR 识别中... ${Math.round(m.progress * 100)}%`);
       }
-      rowInputs[idx].level.value = String(row.level);
-      rowInputs[idx].limit.value = String(row.limit);
-      rowInputs[idx].max.value = String(row.max);
-    });
-
-    syncModeHint(false);
-
-    if (parsed.missing.length) {
-      setOcrStatus(`已应用 ${ATTR_NAMES.length - parsed.missing.length}/8 项。缺失: ${parsed.missing.join(", ")}`);
-      alert(`OCR 已部分应用，缺失属性: ${parsed.missing.join(", ")}\n请手动补全后再计算。`);
-      return;
-    }
-
-    setOcrStatus("OCR 已识别并应用 8/8 项属性。");
+    };
   }
 
   function loadImageFromFile(file) {
@@ -716,35 +611,45 @@ function initNeedPage() {
 
   async function buildOcrCanvas(file) {
     const img = await loadImageFromFile(file);
-    const scale = 2;
+    const scale = 4;
     const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.floor(img.width * scale));
+
+    const cropRightPercent = 0.0;
+    const croppedWidth = Math.floor(img.width * (1 - cropRightPercent));
+
+    canvas.width = Math.max(1, Math.floor(croppedWidth * scale));
     canvas.height = Math.max(1, Math.floor(img.height * scale));
     const ctx = canvas.getContext("2d");
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    ctx.imageSmoothingEnabled = false;
+
+    ctx.drawImage(
+      img,
+      0, 0, croppedWidth, img.height,
+      0, 0, canvas.width, canvas.height
+    );
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imageData.data;
     for (let i = 0; i < data.length; i += 4) {
       const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-      const contrast = Math.max(0, Math.min(255, (gray - 128) * 1.35 + 128));
-      data[i] = contrast;
-      data[i + 1] = contrast;
-      data[i + 2] = contrast;
+      const binary = gray > 65 ? 0 : 255;
+      data[i] = binary;
+      data[i + 1] = binary;
+      data[i + 2] = binary;
     }
     ctx.putImageData(imageData, 0, 0);
 
     return canvas;
   }
 
-  async function recognizeOcrFromImage() {
-    const file = ocrImageInput.files && ocrImageInput.files[0];
+  async function recognizeAndApplyOcr(file) {
     if (!file) {
-      alert("请先选择截图文件");
+      alert("请先选择或粘贴截图文件");
       return;
     }
 
-    if (!window.Tesseract || !window.Tesseract.recognize) {
+    if (!window.Tesseract || !window.Tesseract.createWorker) {
       alert("OCR 引擎未加载，请检查网络后重试。");
       return;
     }
@@ -752,30 +657,84 @@ function initNeedPage() {
     ocrRecognizeBtn.disabled = true;
     setOcrStatus("OCR 识别中...");
 
+    let worker = null;
     try {
       const canvas = await buildOcrCanvas(file);
-      const result = await window.Tesseract.recognize(canvas, "eng", {
-        logger: (m) => {
-          if (m.status === "recognizing text" && typeof m.progress === "number") {
-            setOcrStatus(`OCR 识别中... ${Math.round(m.progress * 100)}%`);
-          }
+
+      console.log("[OCR] 创建 Worker (mc 模型)");
+      worker = await createTesseractWorker(makeOcrLogger(setOcrStatus));
+
+      console.log("[OCR] 开始识别...");
+      const result = await worker.recognize(canvas);
+
+      const rawText = result?.data?.text || "";
+      console.log("[OCR] 识别完成, 文本长度:", rawText.length);
+
+      // 自动应用识别结果到表格
+      const parsed = parseMountOcrText(rawText);
+      if (!parsed.ok) {
+        setOcrStatus(`OCR 识别完成，但解析失败: ${parsed.message}`);
+        alert(`OCR 识别完成但解析失败: ${parsed.message}\n\n识别文本:\n${rawText.slice(0, 500)}`);
+        return;
+      }
+
+      parsed.rows.forEach((item, idx) => {
+        if (item.max !== null) {
+          rowInputs[idx].max.value = String(item.max);
+        }
+        if (item.level !== null) {
+          rowInputs[idx].level.value = String(item.level);
+        }
+        if (item.limit !== null) {
+          rowInputs[idx].limit.value = String(item.limit);
         }
       });
 
-      ocrText.value = result?.data?.text || "";
-      setOcrStatus("OCR 识别完成，请点击“应用识别结果”。");
+      syncModeHint(false);
+
+      const missingBoth = parsed.missingLevel.filter(a => parsed.missingLimit.includes(a));
+      const missingOnlyLevel = parsed.missingLevel.filter(a => !parsed.missingLimit.includes(a));
+      const missingOnlyLimit = parsed.missingLimit.filter(a => !parsed.missingLevel.includes(a));
+
+      const msgs = [];
+      if (missingBoth.length) msgs.push(`缺失 Level 和 Limit: ${missingBoth.join(", ")}`);
+      if (missingOnlyLevel.length) msgs.push(`缺失 Level: ${missingOnlyLevel.join(", ")}`);
+      if (missingOnlyLimit.length) msgs.push(`缺失 Limit: ${missingOnlyLimit.join(", ")}`);
+
+      if (msgs.length > 0) {
+        setOcrStatus(`已识别并填充，但 ${msgs.join("；")}。请手动补全后计算。`);
+        alert(`OCR 识别结果已部分填入表格。\n\n${msgs.join("\n")}\n\n请手动补全后点击计算。`);
+      } else {
+        setOcrStatus("OCR 识别并完美填充 8/8 项属性！");
+      }
     } catch (err) {
-      setOcrStatus(`OCR 识别失败: ${err && err.message ? err.message : "未知错误"}`);
-      alert(`OCR 识别失败: ${err && err.message ? err.message : "未知错误"}`);
+      let errorMsg = "未知错误";
+      if (err) {
+        if (typeof err === "string") {
+          errorMsg = err;
+        } else if (err.message) {
+          errorMsg = err.message;
+        } else if (err.toString) {
+          errorMsg = err.toString();
+        }
+        console.error("[OCR] 错误详情:", err);
+        if (err.stack) console.error("[OCR] Stack:", err.stack);
+      }
+      setOcrStatus(`OCR 识别失败: ${errorMsg}`);
+      alert(`OCR 识别失败: ${errorMsg}\n\n请查看控制台 (F12) 获取详细错误信息。`);
     } finally {
+      if (worker) {
+        try { await worker.terminate(); } catch (e) { /* ignore */ }
+      }
       ocrRecognizeBtn.disabled = false;
     }
   }
 
-  function renderManualLevelOptions(rows, preferHighestUsable) {
+  function renderManualLevelOptions(preferUsable) {
+    const rows = collectRows();
     const usableLevels = getUsableLevels(rows.map((r) => r.level));
-    const selected = parseNonNegativeInt(manualLevelSelect.value, 10);
-    const defaultLevel = usableLevels.length ? usableLevels[usableLevels.length - 1] : MATERIAL_LEVELS[0];
+    const defaultValue = usableLevels.length ? usableLevels[usableLevels.length - 1] : MATERIAL_LEVELS[0];
+    const currentVal = parseNonNegativeInt(manualLevelSelect.value, 10);
 
     manualLevelSelect.innerHTML = "";
     MATERIAL_LEVELS.forEach((lv) => {
@@ -785,143 +744,499 @@ function initNeedPage() {
       manualLevelSelect.appendChild(option);
     });
 
-    if (preferHighestUsable) {
-      manualLevelSelect.value = String(defaultLevel);
-      return;
-    }
-
-    if (MATERIAL_LEVELS.includes(selected)) {
-      manualLevelSelect.value = String(selected);
+    if (preferUsable) {
+      manualLevelSelect.value = String(defaultValue);
+    } else if (MATERIAL_LEVELS.includes(currentVal)) {
+      manualLevelSelect.value = String(currentVal);
     } else {
-      manualLevelSelect.value = String(defaultLevel);
+      manualLevelSelect.value = String(defaultValue);
     }
   }
 
-  function setRowsFromPreset(preset) {
-    rowInputs.forEach((item, i) => {
-      item.level.value = String(preset.level[i]);
-      item.limit.value = String(preset.limit[i]);
-      item.max.value = String(preset.max[i]);
+  // --- 材料选择弹窗（每个单元格独立勾选） ---
+  const materialModal = document.getElementById("materialModal");
+  const materialTbody = document.getElementById("materialTbody");
+  const selectAllCheck = document.getElementById("selectAllCheck");
+  const modalConfirmBtn = document.getElementById("modalConfirmBtn");
+  const modalCancelBtn = document.getElementById("modalCancelBtn");
+  const modalClearBtn = document.getElementById("modalClearBtn");
+  const pickRow = document.getElementById("pickRow");
+  const manualRow = document.getElementById("manualRow");
+  const pickMaterialBtn = document.getElementById("pickMaterialBtn");
+  const pickStatus = document.getElementById("pickStatus");
+
+  /** 材料类型名称（对应 8 种材料） */
+  const MATERIAL_TYPE_KEYS = ["Ingot", "Gem", "Plank", "Paper", "String", "Grain", "Oil", "Meat"];
+
+  /** 用户勾选的材料集合，格式: "level-typeIdx" e.g. "1-0" 表示 Lv.1 的 Ingot */
+  let pickedMaterials = new Set();
+
+  /** 构建弹窗表格，每个单元格内嵌复选框 */
+  function buildModalTable() {
+    materialTbody.innerHTML = "";
+    const sortedLevels = MATERIAL_LEVELS.slice().sort((a, b) => a - b);
+    sortedLevels.forEach((lv) => {
+      const names = MATERIAL_SHORT_NAMES[lv] || MATERIAL_BASE_NAMES.map((_, i) => `Lv${lv}-${MATERIAL_BASE_NAMES[i]}`);
+      const levelLabel = `Lv.${lv}`;
+      const tr = document.createElement("tr");
+      tr.dataset.level = lv;
+
+      // 行复选框
+      const rowAllChecked = names.every((_, idx) => pickedMaterials.has(`${lv}-${idx}`));
+      const tdCheck = document.createElement("td");
+      const rowCb = document.createElement("input");
+      rowCb.type = "checkbox";
+      rowCb.className = "row-check";
+      rowCb.value = lv;
+      rowCb.checked = rowAllChecked;
+      tdCheck.appendChild(rowCb);
+
+      // 等级
+      const tdLevel = document.createElement("td");
+      tdLevel.textContent = levelLabel;
+
+      tr.appendChild(tdCheck);
+      tr.appendChild(tdLevel);
+
+      // 8 种材料单元格
+      for (let i = 0; i < 8; i++) {
+        const td = document.createElement("td");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.className = "cell-check";
+        cb.dataset.level = lv;
+        cb.dataset.idx = i;
+        cb.checked = pickedMaterials.has(`${lv}-${i}`);
+        td.appendChild(cb);
+        td.appendChild(document.createTextNode(" " + names[i]));
+        tr.appendChild(td);
+      }
+
+      if (rowAllChecked) tr.classList.add("selected");
+      materialTbody.appendChild(tr);
     });
-    modeSelect.value = preset.mode;
-    renderManualLevelOptions(collectRows(), false);
-    manualLevelSelect.value = String(preset.manualLevel);
-    syncModeHint();
   }
 
-  function refreshSelect() {
-    const presets = readPresets();
-    let activeName = getActivePresetName();
-    if (!findPresetByName(presets, activeName)) {
-      activeName = presets[0].name;
-      setActivePresetName(activeName);
+  /** 同步全选复选框状态 */
+  function syncSelectAll() {
+    const allCbs = materialTbody.querySelectorAll(".cell-check");
+    const checked = materialTbody.querySelectorAll(".cell-check:checked");
+    selectAllCheck.checked = checked.length === allCbs.length;
+    selectAllCheck.indeterminate = checked.length > 0 && checked.length < allCbs.length;
+  }
+
+  /** 从 DOM 同步 pickedMaterials */
+  function syncPickedMaterials() {
+    pickedMaterials.clear();
+    materialTbody.querySelectorAll(".cell-check:checked").forEach((cb) => {
+      pickedMaterials.add(`${cb.dataset.level}-${cb.dataset.idx}`);
+    });
+    // 同步行选中状态和行复选框
+    materialTbody.querySelectorAll("tr").forEach((tr) => {
+      const lv = tr.dataset.level;
+      const cellCbs = tr.querySelectorAll(".cell-check");
+      const rowCb = tr.querySelector(".row-check");
+      const rowAll = Array.from(cellCbs).every(cb => cb.checked);
+      if (rowCb) rowCb.checked = rowAll;
+      tr.classList.toggle("selected", rowAll);
+    });
+    syncSelectAll();
+  }
+
+  // 全选
+  selectAllCheck.addEventListener("change", () => {
+    const checked = selectAllCheck.checked;
+    materialTbody.querySelectorAll(".cell-check").forEach((cb) => {
+      cb.checked = checked;
+    });
+    syncPickedMaterials();
+  });
+
+  // 行复选框 → 勾选/取消该行所有材料
+  materialTbody.addEventListener("change", (e) => {
+    if (e.target.classList.contains("row-check")) {
+      const tr = e.target.closest("tr");
+      const checked = e.target.checked;
+      tr.querySelectorAll(".cell-check").forEach((cb) => {
+        cb.checked = checked;
+      });
+      syncPickedMaterials();
+    } else if (e.target.classList.contains("cell-check")) {
+      syncPickedMaterials();
     }
-    fillPresetSelect(presetSelect, presets, activeName);
-    return { presets, activeName };
-  }
+  });
 
-  function syncModeHint(preferHighestOnManual) {
+  modalConfirmBtn.addEventListener("click", () => {
+    syncPickedMaterials();
+    if (pickedMaterials.size === 0) {
+      pickStatus.className = "hint";
+      pickStatus.textContent = "未选择任何材料";
+    } else {
+      // 统计每个材料类型中被勾选的等级数
+      const typeCounts = {};
+      pickedMaterials.forEach((key) => {
+        const idx = key.split("-")[1];
+        typeCounts[idx] = (typeCounts[idx] || 0) + 1;
+      });
+      const parts = Object.entries(typeCounts)
+        .sort((a, b) => Number(a[0]) - Number(b[0]))
+        .map(([idx, count]) =>
+          `<div class="mat-type-card"><span class="mat-card-label">${MATERIAL_TYPE_KEYS[idx]}</span><span class="mat-card-count">×${count}</span></div>`
+        );
+      pickStatus.className = "hint";
+      pickStatus.innerHTML = `<div class="pick-header">已选 <strong>${pickedMaterials.size}</strong> 项材料</div><div class="pick-grid">${parts.join("")}</div>`;
+    }
+    materialModal.hidden = true;
+  });
+
+  modalCancelBtn.addEventListener("click", () => {
+    materialModal.hidden = true;
+  });
+
+  modalClearBtn.addEventListener("click", () => {
+    pickedMaterials.clear();
+    // 清空后重新构建表格以反映清空状态
+    buildModalTable();
+    syncPickedMaterials();
+  });
+
+  pickMaterialBtn.addEventListener("click", () => {
+    buildModalTable();
+    materialModal.hidden = false;
+  });
+
+  function syncModeHint(preferUsable) {
     const rows = collectRows();
     const usableLevels = getUsableLevels(rows.map((r) => r.level));
     if (!usableLevels.length) {
       modeHint.textContent = "当前 Level 太低，无法使用任何已记录材料等级。";
     } else {
-      modeHint.textContent = `当前可用材料等级: ${usableLevels.join(", ")}`;
+      const highest = usableLevels[usableLevels.length - 1];
+      modeHint.innerHTML = `当前可用最高材料等级: <strong>Lv.${highest}</strong>`;
     }
 
     const isManual = modeSelect.value === "manual";
     manualLevelSelect.disabled = !isManual;
-
-    renderManualLevelOptions(rows, Boolean(preferHighestOnManual && isManual));
+    renderManualLevelOptions(Boolean(preferUsable && isManual));
   }
 
-  const state = refreshSelect();
-  const activePreset = findPresetByName(state.presets, state.activeName) || state.presets[0];
-  setRowsFromPreset(activePreset);
+  // --- 事件绑定 ---
 
-  presetSelect.addEventListener("change", () => {
-    setActivePresetName(presetSelect.value);
+  // 粘贴图片 → 保存文件 + 直接识别并应用
+  ocrCard.addEventListener("paste", async (e) => {
+    if (!e.clipboardData) return;
+    const items = e.clipboardData.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          pastedOcrFile = file;
+          ocrImageInput.value = "";
+          await recognizeAndApplyOcr(file);
+        }
+        break;
+      }
+    }
   });
 
-  modeSelect.addEventListener("change", () => syncModeHint(true));
+  // 文件选择 → 直接识别并应用
+  ocrImageInput.addEventListener("change", async () => {
+    const file = ocrImageInput.files && ocrImageInput.files[0];
+    if (file) {
+      pastedOcrFile = null; // 文件选择器优先
+      await recognizeAndApplyOcr(file);
+    }
+  });
+
+  function syncModeVisibility() {
+    const mode = modeSelect.value;
+    manualRow.hidden = mode !== "manual";
+    pickRow.hidden = mode !== "pick";
+  }
+
+  modeSelect.addEventListener("change", () => {
+    syncModeVisibility();
+    syncModeHint(true);
+  });
   rowInputs.forEach((item) => {
     item.level.addEventListener("input", () => syncModeHint(false));
   });
 
-  applyPresetBtn.addEventListener("click", () => {
-    const current = findPresetByName(readPresets(), presetSelect.value);
-    if (!current) {
-      alert("预设不存在");
-      return;
-    }
-    setRowsFromPreset(current);
-  });
-
   ocrRecognizeBtn.addEventListener("click", () => {
-    recognizeOcrFromImage();
+    ocrImageInput.click();
   });
 
-  ocrApplyBtn.addEventListener("click", () => {
-    applyOcrTextToInputs();
-  });
+  function hideOriginalView() {
+    originalCanvasWrap.hidden = true;
+    showOriginalBtn.textContent = "显示原图";
+  }
 
-  savePresetBtn.addEventListener("click", () => {
-    const name = window.prompt("请输入预设名称", presetSelect.value || "新预设");
-    if (!name) {
+  function hidePreprocView() {
+    preprocCanvasWrap.hidden = true;
+    showPreprocessedBtn.textContent = "显示预处理";
+  }
+
+  function getOcrSourceFile() {
+    const fromInput = ocrImageInput.files && ocrImageInput.files[0];
+    if (fromInput) return fromInput;
+    if (pastedOcrFile) return pastedOcrFile;
+    return null;
+  }
+
+  showOriginalBtn.addEventListener("click", async () => {
+    const file = getOcrSourceFile();
+    if (!file) {
+      preprocHint.textContent = "请先选择或粘贴截图文件";
       return;
     }
+    if (!originalCanvasWrap.hidden) {
+      // 已显示 → 收起
+      hideOriginalView();
+      preprocHint.textContent = "";
+      return;
+    }
+    try {
+      const img = await loadImageFromFile(file);
+      originalCanvas.width = img.width;
+      originalCanvas.height = img.height;
+      const ctx = originalCanvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      hidePreprocView();
+      originalCanvasWrap.hidden = false;
+      showOriginalBtn.textContent = "收起原图";
+      originalCanvasWrap.scrollIntoView({ behavior: "smooth", block: "center" });
+      preprocHint.textContent = `已显示原图 (${img.width}×${img.height})`;
+    } catch (err) {
+      preprocHint.textContent = `原图加载失败: ${err?.message || "未知错误"}`;
+    }
+  });
 
+  showPreprocessedBtn.addEventListener("click", async () => {
+    const file = getOcrSourceFile();
+    if (!file) {
+      preprocHint.textContent = "请先选择或粘贴截图文件";
+      return;
+    }
+    if (!preprocCanvasWrap.hidden) {
+      // 已显示 → 收起
+      hidePreprocView();
+      preprocHint.textContent = "";
+      return;
+    }
+    try {
+      const processed = await buildOcrCanvas(file);
+      preprocCanvas.width = processed.width;
+      preprocCanvas.height = processed.height;
+      const ctx = preprocCanvas.getContext("2d");
+      ctx.drawImage(processed, 0, 0);
+      hideOriginalView();
+      preprocCanvasWrap.hidden = false;
+      showPreprocessedBtn.textContent = "收起预处理";
+      preprocCanvasWrap.scrollIntoView({ behavior: "smooth", block: "center" });
+      preprocHint.textContent = `已显示预处理图像 (${processed.width}×${processed.height})`;
+    } catch (err) {
+      preprocHint.textContent = `预处理失败: ${err?.message || "未知错误"}`;
+    }
+  });
+
+  // ===== Toast 提示 =====
+  function showToast(msg) {
+    let el = document.getElementById("toastEl");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "toastEl";
+      el.className = "toast";
+      document.body.appendChild(el);
+    }
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(el._timer);
+    el._timer = setTimeout(() => el.classList.remove("show"), 2500);
+  }
+
+  /** 从 pickedMaterials 更新 pickStatus 摘要 */
+  function updatePickSummary() {
+    if (pickedMaterials.size === 0) {
+      pickStatus.className = "hint";
+      pickStatus.textContent = "未选择任何材料";
+      return;
+    }
+    const typeCounts = {};
+    pickedMaterials.forEach((key) => {
+      const idx = key.split("-")[1];
+      typeCounts[idx] = (typeCounts[idx] || 0) + 1;
+    });
+    const parts = Object.entries(typeCounts)
+      .sort((a, b) => Number(a[0]) - Number(b[0]))
+      .map(([idx, count]) =>
+        `<div class="mat-type-card"><span class="mat-card-label">${MATERIAL_TYPE_KEYS[idx]}</span><span class="mat-card-count">×${count}</span></div>`
+      );
+    pickStatus.className = "hint";
+    pickStatus.innerHTML = `<div class="pick-header">已选 <strong>${pickedMaterials.size}</strong> 项材料</div><div class="pick-grid">${parts.join("")}</div>`;
+  }
+
+  // ===== 重置按钮 =====
+  resetBtn.addEventListener("click", () => {
+    rowInputs.forEach((item) => {
+      item.level.value = "1";
+      item.limit.value = "10";
+      item.max.value = "30";
+    });
+    saveFormToStorage();
+  });
+
+  // ===== 复制链接按钮 =====
+  copyLinkBtn.addEventListener("click", () => {
+    const data = compressFormData();
+    const url = `${location.protocol}//${location.host}${location.pathname}#${data}`;
+    navigator.clipboard.writeText(url).then(() => {
+      showToast("链接已复制到剪贴板");
+    }).catch(() => {
+      // fallback
+      const inp = document.createElement("input");
+      inp.value = url;
+      document.body.appendChild(inp);
+      inp.select();
+      document.execCommand("copy");
+      document.body.removeChild(inp);
+      showToast("链接已复制到剪贴板");
+    });
+  });
+
+  // ===== 表单数据存储 =====
+  function saveFormToStorage() {
+    const cells = rowInputs.map(item => ({
+      level: item.level.value,
+      limit: item.limit.value,
+      max: item.max.value,
+    }));
+    try {
+      localStorage.setItem("mount_form_data", JSON.stringify(cells));
+    } catch (_) { /* ignore quota errors */ }
+  }
+
+  function loadFormFromStorage() {
+    try {
+      const raw = localStorage.getItem("mount_form_data");
+      if (!raw) return false;
+      const cells = JSON.parse(raw);
+      if (!Array.isArray(cells) || cells.length !== 8) return false;
+      cells.forEach((cell, i) => {
+        rowInputs[i].level.value = cell.level ?? "1";
+        rowInputs[i].limit.value = cell.limit ?? "10";
+        rowInputs[i].max.value = cell.max ?? "30";
+      });
+      return true;
+    } catch (_) { return false; }
+  }
+
+  // ===== 材料选择缓存 (localStorage) =====
+  function savePickedMaterialsToStorage() {
+    try {
+      localStorage.setItem("mount_picked_materials", JSON.stringify([...pickedMaterials]));
+    } catch (_) { /* ignore */ }
+  }
+
+  function loadPickedMaterialsFromStorage() {
+    try {
+      const raw = localStorage.getItem("mount_picked_materials");
+      if (!raw) return;
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        arr.forEach(k => pickedMaterials.add(String(k)));
+        updatePickSummary();
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  // 拦截 pick 相关操作，保存到 storage
+  const origPickSet = pickedMaterials.add.bind(pickedMaterials);
+  pickedMaterials.add = function (val) {
+    origPickSet(val);
+    savePickedMaterialsToStorage();
+  };
+  const origPickDelete = pickedMaterials.delete.bind(pickedMaterials);
+  pickedMaterials.delete = function (val) {
+    origPickDelete(val);
+    savePickedMaterialsToStorage();
+  };
+  const origPickClear = pickedMaterials.clear.bind(pickedMaterials);
+  pickedMaterials.clear = function () {
+    origPickClear();
+    savePickedMaterialsToStorage();
+  };
+
+  // ===== URL hash 压缩 / 解压 =====
+  /**
+   * 使用纯 hex 编码（0-9a-f），完全避免字符编码问题。
+   * 每个值 2 位 hex:
+   *   Level: 1-115  → 01-73
+   *   Limit: 0-99   → 00-63
+   *   Max:   0-99   → 00-63
+   * 8 × 3 × 2 = 48 hex 字符
+   */
+  function compressFormData() {
     const rows = collectRows();
-    const check = validateRows(rows);
-    if (!check.ok) {
-      alert(check.message);
-      return;
+    const parts = [];
+    for (const r of rows) {
+      parts.push(
+        (r.level || 1).toString(16).padStart(2, "0"),
+        (r.limit || 10).toString(16).padStart(2, "0"),
+        (r.max || 30).toString(16).padStart(2, "0"),
+      );
     }
+    return parts.join("");
+  }
 
-    const presetsNow = readPresets();
-    const existing = findPresetByName(presetsNow, name);
-    const base = existing ? deepCopyPreset(existing) : deepCopyPreset(defaultPreset());
-
-    base.name = name;
-    base.level = rows.map((r) => r.level);
-    base.limit = rows.map((r) => r.limit);
-    base.max = rows.map((r) => r.max);
-    base.mode = modeSelect.value === "manual" ? "manual" : "auto";
-    base.manualLevel = parseNonNegativeInt(manualLevelSelect.value, 10);
-
-    if (existing) {
-      const idx = presetsNow.findIndex((p) => p.name === name);
-      presetsNow[idx] = base;
-    } else {
-      presetsNow.push(base);
+  function decompressFormData(encoded) {
+    try {
+      // 需要至少 48 hex 字符（24 个字节）
+      if (encoded.length < 48) return null;
+      const rows = [];
+      for (let i = 0; i < 48; i += 6) {
+        rows.push({
+          level: Math.max(1, Math.min(255, Number.parseInt(encoded.slice(i, i + 2), 16))),
+          limit: Math.max(0, Math.min(255, Number.parseInt(encoded.slice(i + 2, i + 4), 16))),
+          max:   Math.max(0, Math.min(255, Number.parseInt(encoded.slice(i + 4, i + 6), 16))),
+        });
+      }
+      return rows;
+    } catch (_) {
+      return null;
     }
+  }
 
-    savePresets(presetsNow);
-    setActivePresetName(name);
-    refreshSelect();
-    alert("预设已保存");
+  // ===== 从 URL hash 恢复数据 =====
+  function restoreFromHashIfPresent() {
+    const hash = location.hash.replace(/^#/, "");
+    if (!hash) return false;
+    const rows = decompressFormData(hash);
+    if (!rows || rows.length !== 8) return false;
+    rows.forEach((r, i) => {
+      rowInputs[i].level.value = String(r.level);
+      rowInputs[i].limit.value = String(r.limit);
+      rowInputs[i].max.value = String(r.max);
+    });
+    // 清除 hash 避免刷新时重复加载
+    history.replaceState(null, "", location.pathname + location.search);
+    return true;
+  }
+
+  // ===== 自动保存表单改动到 storage =====
+  rowInputs.forEach((item) => {
+    [item.level, item.limit, item.max].forEach((el) => {
+      el.addEventListener("change", saveFormToStorage);
+    });
   });
 
-  deletePresetBtn.addEventListener("click", () => {
-    const name = presetSelect.value;
-    if (name === "default") {
-      alert("默认预设不可删除");
-      return;
-    }
-
-    const ok = window.confirm(`确认删除预设: ${name} ?`);
-    if (!ok) {
-      return;
-    }
-
-    const presetsNow = readPresets().filter((p) => p.name !== name);
-    savePresets(presetsNow);
-    const nextName = presetsNow[0]?.name || "default";
-    setActivePresetName(nextName);
-    const nextState = refreshSelect();
-    const nextPreset = findPresetByName(nextState.presets, nextState.activeName) || defaultPreset();
-    setRowsFromPreset(nextPreset);
-  });
+  // ===== 加载数据 =====
+  if (!restoreFromHashIfPresent()) {
+    loadFormFromStorage();
+  }
+  loadPickedMaterialsFromStorage();
 
   solveBtn.addEventListener("click", () => {
     const rows = collectRows();
@@ -933,7 +1248,6 @@ function initNeedPage() {
 
     const levels = rows.map((r) => r.level);
     const limits = rows.map((r) => r.limit);
-    // Feeding increases limit stats, so target is the gap from Limit to Max.
     const minNeed = rows.map((r) => r.max - r.limit);
     const maxNeed = Array(8).fill(Number.POSITIVE_INFINITY);
 
@@ -954,6 +1268,74 @@ function initNeedPage() {
       }
       selectedLevel = manualLevel;
       result = solveMinimumWithinBounds(minNeed, maxNeed, MATERIAL_LEVEL_DATA[selectedLevel]);
+    } else if (modeSelect.value === "pick") {
+      if (pickedMaterials.size === 0) {
+        alert("请先点击「选择材料」勾选可获取的材料。");
+        return;
+      }
+
+      // 为每种材料类型选取最高可用等级
+      // pickedMaterials 格式: "level-idx"，例如 "10-0" 表示 Lv.10 的 Ingot
+      const bestLevelForType = {};
+      pickedMaterials.forEach((key) => {
+        const [lvStr, idxStr] = key.split("-");
+        const lv = Number.parseInt(lvStr, 10);
+        const idx = Number.parseInt(idxStr, 10);
+        if (!usableLevels.includes(lv)) return;
+        if (!bestLevelForType[idx] || lv > bestLevelForType[idx]) {
+          bestLevelForType[idx] = lv;
+        }
+      });
+
+      // 检查是否有属性对应的所有材料类型均未被勾选
+      const typesPicked = Object.keys(bestLevelForType).map(Number);
+      const missingAttrs = [];
+      for (let j = 0; j < 8; j++) {
+        // 属性 j 可由哪些材料类型提供？
+        // 遍历所有材料类型 i, 若任一勾选类型的该属性值 >0 则 OK
+        let canSupply = false;
+        // 先看已勾选类型的最高等级是否能提供该属性
+        for (const typeIdx of typesPicked) {
+          const lv = bestLevelForType[typeIdx];
+          const matrix = MATERIAL_LEVEL_DATA[lv];
+          if (matrix && matrix[typeIdx] && matrix[typeIdx][j] > 0) {
+            canSupply = true;
+            break;
+          }
+        }
+        if (!canSupply) {
+          // 再检查是否还有任何等级的该类型材料被勾选（有勾选但属性0也正常）
+          // 该属性完全无任何材料可提供
+          missingAttrs.push(ATTR_NAMES[j]);
+        }
+      }
+
+      if (missingAttrs.length === 8) {
+        alert("未勾选任何可提供点数增益的材料，无法计算。");
+        return;
+      }
+
+      if (missingAttrs.length > 0) {
+        alert(`以下属性无任何已勾选的材料能提供点数: ${missingAttrs.join(", ")}\n请勾选对应材料后重试。`);
+        return;
+      }
+
+      // 构造自定义矩阵：行 i 使用 bestLevelForType[i] 等级的数据
+      const customMatrix = [];
+      for (let i = 0; i < 8; i++) {
+        const lv = bestLevelForType[i];
+        if (lv !== undefined) {
+          customMatrix.push(MATERIAL_LEVEL_DATA[lv][i]);
+        } else {
+          // 未勾选该类型 → 全零行
+          customMatrix.push(Array(8).fill(0));
+        }
+      }
+
+      result = solveMinimumWithinBounds(minNeed, maxNeed, customMatrix);
+      if (result) {
+        selectedLevel = null; // 混合等级，不显示单一等级
+      }
     } else {
       const candidates = usableLevels.slice().sort((a, b) => b - a);
       for (let i = 0; i < candidates.length; i++) {
@@ -970,27 +1352,51 @@ function initNeedPage() {
     resultCard.hidden = false;
 
     if (!result) {
-      bestCountEl.textContent = "在每种素材最多 5 个限制下，无可行解。";
-      selectedLevelEl.textContent = "材料等级: 无";
-      timeEstimateEl.textContent = "预计喂养时间: 无";
-      usageBody.innerHTML = "";
-      attrSummary.textContent = "请检查 Limit 到 Max 的差值是否可达，或改用更低材料等级。";
+      bestCountEl.textContent = "无可行解";
+      selectedLevelEl.textContent = "无";
+      timeEstimateEl.textContent = "无";
       return;
     }
 
-    bestCountEl.textContent = `最少素材数量: ${result.bestCount}`;
-    selectedLevelEl.textContent = `材料等级: Level ${selectedLevel}`;
-
-    const timeEstimate = estimateFeedingTime(limits, selectedLevel, result.bestChoice);
-    if (timeEstimate !== null) {
-      timeEstimateEl.textContent = `预计喂养时间: ${formatMinutes(timeEstimate)}`;
+    // 构建材料名称列表（pick 模式使用最佳等级的混合，否则使用单一等级）
+    let materialNames;
+    if (modeSelect.value === "pick") {
+      const bft = {};
+      pickedMaterials.forEach((key) => {
+        const [lvStr, idxStr] = key.split("-");
+        const lv = Number.parseInt(lvStr, 10);
+        const idx = Number.parseInt(idxStr, 10);
+        if (!usableLevels.includes(lv)) return;
+        if (!bft[idx] || lv > bft[idx]) bft[idx] = lv;
+      });
+      materialNames = [];
+      for (let i = 0; i < 8; i++) {
+        if (bft[i] !== undefined) {
+          const names = getMaterialNamesForLevel(bft[i]);
+          materialNames.push(names[i]);
+        } else {
+          materialNames.push("（未选择）");
+        }
+      }
+      const usedLevels = Object.values(bft).filter(Boolean);
+      const levelStr = usedLevels.length ? [...new Set(usedLevels)].sort((a, b) => a - b).join("/") : "无";
+      selectedLevelEl.textContent = `${levelStr} (混合)`;
     } else {
-      timeEstimateEl.textContent = "预计喂养时间: 无";
+      materialNames = getMaterialNamesForLevel(selectedLevel);
+      selectedLevelEl.textContent = `Level ${selectedLevel}`;
+    }
+
+    bestCountEl.textContent = `${result.bestCount}`;
+
+    const timeEstimate = modeSelect.value === "pick" ? null : estimateFeedingTime(limits, selectedLevel, result.bestChoice);
+    if (timeEstimate !== null) {
+      timeEstimateEl.textContent = formatMinutes(timeEstimate);
+    } else {
+      timeEstimateEl.textContent = "无";
     }
 
     usageBody.innerHTML = "";
-    const names = getMaterialNamesForLevel(selectedLevel);
-    names.forEach((name, i) => {
+    materialNames.forEach((name, i) => {
       if (result.bestChoice[i] <= 0) {
         return;
       }
@@ -1005,9 +1411,19 @@ function initNeedPage() {
       usageBody.appendChild(tr);
     }
 
-    const finalLimits = rows.map((row, idx) => row.limit + result.finalAdd[idx]);
-    attrSummary.textContent = `最终Limit: ${finalLimits.map((v, idx) => `${ATTR_NAMES[idx]}=${v}`).join(" | ")}`;
+    const overflows = rows.map((row, idx) => row.limit + result.finalAdd[idx] - row.max);
+    overflowGrid.innerHTML = overflows.map((v, idx) => {
+      let cls = "color-ok";
+      if (v > 0 && v <= 5) cls = "color-warn";
+      else if (v > 5) cls = "color-danger";
+      return `<div class="overflow-badge ${cls}"><span class="badge-attr">${ATTR_NAMES[idx]}</span><span class="badge-val">${v > 0 ? "+" : ""}${v}</span></div>`;
+    }).join("");
   });
+
+  // 初始化材料等级下拉与模式可见性
+  syncModeVisibility();
+  renderManualLevelOptions(true);
+  syncModeHint(false);
 }
 
 (function main() {

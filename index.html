@@ -18,71 +18,144 @@
       <h1>Mount Planner</h1>
     </header>
 
-    <section class="card hero">
-      <h2>8 属性规划</h2>
-      <p>每个属性填写 Level / Limit / Max。</p>
-      <p>计算所有属性 Limit 提升至 MAX 最少材料。</p>
-      <div class="preset-row">
-        <label for="presetSelect">预设</label>
-        <select id="presetSelect"></select>
-        <button id="applyPresetBtn" type="button">应用预设</button>
-        <button id="savePresetBtn" type="button">保存为新预设</button>
-        <button id="deletePresetBtn" type="button" class="danger">删除预设</button>
+    <div class="main-layout">
+      <!-- 左侧主输入区 -->
+      <div class="left-panel">
+        <section class="card hero">
+          <h2>坐骑属性规划</h2>
+          <p>每个属性填写 Level / Limit / Max。点击「计算最少素材」得到结果。</p>
+        </section>
+
+        <section class="card">
+          <form id="needForm" class="need-grid">
+            <div class="triple-head">属性</div>
+            <div class="triple-head">Level</div>
+            <div class="triple-head">Limit</div>
+            <div class="triple-head">Max</div>
+          </form>
+
+          <div class="actions actions-bar">
+            <div class="actions-left">
+              <button id="resetBtn" type="button" class="secondary">重置</button>
+              <button id="copyLinkBtn" type="button" class="secondary">复制链接</button>
+            </div>
+            <div class="actions-right">
+              <button id="solveBtn" type="button" class="primary">计算最少素材</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card result" id="resultCard" hidden>
+          <h3>计算结果</h3>
+          <div class="result-summary">
+            <div class="result-stat" id="bestCountCard">
+              <span class="result-stat-label">最少素材数量</span>
+              <span class="result-stat-value" id="bestCount">-</span>
+            </div>
+            <div class="result-stat" id="levelCard">
+              <span class="result-stat-label">材料等级</span>
+              <span class="result-stat-value" id="selectedMaterialLevel">-</span>
+            </div>
+            <div class="result-stat" id="timeCard">
+              <span class="result-stat-label">预计喂养时间</span>
+              <span class="result-stat-value" id="timeEstimate">-</span>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>素材</th>
+                <th>数量</th>
+              </tr>
+            </thead>
+            <tbody id="usageBody"></tbody>
+          </table>
+          <div class="overflow-section">
+            <h4>溢出点数</h4>
+            <div id="overflowGrid" class="overflow-grid"></div>
+          </div>
+        </section>
       </div>
-    </section>
 
-    <section class="card">
-      <h3>截图识别 (OCR)</h3>
-      <p class="hint">仅识别坐骑属性块：`Level/Limit (MAX)` 下方 8 行属性。支持 `Jump Height` 与 `Altitude`。可直接粘贴截图到下方文本框。</p>
-      <div class="ocr-row">
-        <input id="ocrImageInput" type="file" accept="image/*" />
-        <button id="ocrRecognizeBtn" type="button">识别截图</button>
-        <button id="ocrApplyBtn" type="button">应用识别结果</button>
+      <!-- 右侧配置区 -->
+      <div class="right-panel">
+        <section class="card config-card" id="ocrCard">
+          <h3>截图识别 (OCR)</h3>
+          <p class="hint">粘贴或上传图片后自动填充属性</p>
+          <div class="ocr-row">
+            <input id="ocrImageInput" type="file" accept="image/*" hidden />
+            <button id="ocrRecognizeBtn" type="button" class="primary">选择文件并识别</button>
+          </div>
+          <p id="ocrStatus" class="hint"></p>
+          <div class="ocr-row">
+            <button id="showOriginalBtn" type="button" class="secondary">显示原图</button>
+            <button id="showPreprocessedBtn" type="button" class="secondary">显示预处理</button>
+            <span id="preprocHint" class="hint" style="margin:0"></span>
+          </div>
+          <div id="preprocCanvasWrap" hidden>
+            <canvas id="preprocCanvas"></canvas>
+          </div>
+          <div id="originalCanvasWrap" hidden>
+            <canvas id="originalCanvas"></canvas>
+          </div>
+        </section>
+
+        <section class="card config-card">
+          <h3>材料配置</h3>
+          <div class="mode-row">
+            <label for="materialMode">材料选择模式</label>
+            <select id="materialMode">
+              <option value="auto">自动优先最高可用等级</option>
+              <option value="manual">手动指定等级</option>
+              <option value="pick">手动指定材料</option>
+            </select>
+          </div>
+          <div class="mode-row" id="manualRow" hidden>
+            <label for="manualMaterialLevel">手动等级</label>
+            <select id="manualMaterialLevel"></select>
+          </div>
+          <div class="mode-row" id="pickRow" hidden>
+            <label>手动材料</label>
+            <button id="pickMaterialBtn" type="button" class="primary">选择材料</button>
+            <span id="pickStatus" class="hint" style="margin:0"></span>
+          </div>
+          <p id="modeHint" class="hint"></p>
+        </section>
       </div>
-      <p id="ocrStatus" class="hint"></p>
-      <textarea id="ocrText" class="ocr-text" placeholder="OCR 结果会显示在这里，也可以手动粘贴文本后点击应用。"></textarea>
-
-      <div class="mode-row">
-        <label for="materialMode">材料选择模式</label>
-        <select id="materialMode">
-          <option value="auto">自动优先最高可用等级</option>
-          <option value="manual">手动指定等级</option>
-        </select>
-
-        <label for="manualMaterialLevel">手动等级</label>
-        <select id="manualMaterialLevel"></select>
-      </div>
-      <p id="modeHint" class="hint"></p>
-
-      <form id="needForm" class="need-grid">
-        <div class="triple-head">属性</div>
-        <div class="triple-head">Level</div>
-        <div class="triple-head">Limit</div>
-        <div class="triple-head">Max</div>
-      </form>
-
-      <div class="actions">
-        <button id="solveBtn" type="button" class="primary">计算最少素材</button>
-      </div>
-    </section>
-
-    <section class="card result" id="resultCard" hidden>
-      <h3>计算结果</h3>
-      <p id="bestCount"></p>
-      <p id="selectedMaterialLevel"></p>
-      <p id="timeEstimate"></p>
-      <table>
-        <thead>
-          <tr>
-            <th>素材</th>
-            <th>数量</th>
-          </tr>
-        </thead>
-        <tbody id="usageBody"></tbody>
-      </table>
-      <p id="attrSummary"></p>
-    </section>
+    </div>
   </main>
+
+  <!-- 材料选择弹窗 -->
+  <div id="materialModal" class="modal-overlay" hidden>
+    <div class="modal-content">
+      <h3>选择可获取材料</h3>
+      <p class="hint" style="margin:0 0 12px">勾选各等级下可获取的材料，同类型材料多选时自动使用最高等级</p>
+      <div class="modal-table-wrap">
+        <table class="material-table" id="materialTable">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="selectAllCheck" /></th>
+              <th>等级</th>
+              <th>Ingot</th>
+              <th>Gem</th>
+              <th>Plank</th>
+              <th>Paper</th>
+              <th>String</th>
+              <th>Grain</th>
+              <th>Oil</th>
+              <th>Meat</th>
+            </tr>
+          </thead>
+          <tbody id="materialTbody"></tbody>
+        </table>
+      </div>
+      <div class="modal-actions">
+        <button id="modalConfirmBtn" type="button" class="primary">确认</button>
+        <button id="modalCancelBtn" type="button">取消</button>
+        <button id="modalClearBtn" type="button" class="danger">清空</button>
+      </div>
+    </div>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="app.js"></script>
